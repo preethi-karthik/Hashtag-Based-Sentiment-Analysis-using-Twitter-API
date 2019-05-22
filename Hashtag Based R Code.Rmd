@@ -5,6 +5,189 @@ date: "5/22/2019"
 output: html_document
 ---
 
+Packages necessary to run the code
+
+```{r include = FALSE}
+install.packages("qdap")
+install.packages("qdapRegex")
+install.packages("qdapDictionaries")
+install.packages("RColorBrewer")
+install.packages("qdapTools")
+install.packages("twitteR")
+install.packages("ROAuth")
+install.packages("plyr")
+install.packages("dplyr")
+install.packages("stringr")
+install.packages("ggplot2")
+install.packages("rtweet")
+
+
+```
+
+
+Including the libraries 
+```{r include=FALSE}
+library(twitteR) 
+library(ROAuth) 
+library(plyr) 
+library(dplyr) 
+library(stringr)
+library(ggplot2)
+library(rtweet)
+library(qdap)
+
+```
+Create an app in twitter developer community 
+Retrieve the api key , api secret key , accesstoken & secret access token from twitter API  
+
+```{r}
+appname <- 'Hashtag Based Sentiment Analysis'
+apikey <- ''
+apiSecretKey <- ''
+accessToken <- ''
+accessTokenSecret <- ''
+requestUrl <- 'https://api.twitter.com/oauth/request_token'
+accessUrl <- 'https://api.twitter.com/oauth/access_token'
+OAuthUrl <- 'https://api.twitter.com/oauth/authorize'
+
+```
+
+```{r}
+download.file(url='http://curl.haxx.se/ca/cacert.pem', destfile='cacert.pem')
+Credentials <- OAuthFactory$new(consumerKey = apikey , consumerSecret= apiSecretKey ,requestURL = requestUrl,accessURL = accessUrl, authURL = OAuthUrl )
+```
+
+```{r}
+Credentials$handshake(cainfo = system.file('CurlSSL', 'cacert.pem', package = 'RCurl'))
+```
+```{r}
+save(Credentials, file='Hashtag Based Sentiment Analysis twitter authentication.Rdata')
+load('Hashtag Based Sentiment Analysis twitter authentication.Rdata')
+
+```
+
+```{r}
+setup_twitter_oauth(apikey,apiSecretKey,access_token = accessToken,access_secret = accessTokenSecret)
+```
+
+
+SearchInTwitter Function Passes the Hashtag to twitter api and retrieves the 
+data (around 1500 tweets that uses the hashtag) , cleans the tweets and process the data , compares each tweet against the positive and negative data file and assigns scores to individual tweet , create a plot about reactions according to data 
+```{r}
+SearchInTwitter<- function(HashtagTerm)
+{
+
+Datalist <- searchTwitter(HashtagTerm,n=1500,lang ="en" )
+#Datalist = strip_retweets(Datalist)
+
+ DataFrame <- twListToDF(Datalist)
+
+#Order by Column names 
+ DataFrame <- DataFrame [, order(names(DataFrame))]
+View(DataFrame)
+
+#Filling with created date 
+ DataFrame$created <- strftime(DataFrame$created, '%Y-%m-%d')
+
+
+ if (file.exists(paste(HashtagTerm, '_tweets.csv'))==FALSE) 
+ write.csv(DataFrame, file=paste(HashtagTerm, '_tweets.csv'), row.names=F)
+
+ Data <- read.csv(file=paste(HashtagTerm, '_tweets.csv'))
+ Data <- rbind(Data, DataFrame)
+ Data <- subset(Data, !duplicated(Data$text))
+ write.csv(Data, file=paste(HashtagTerm, '_tweets.csv'), row.names=F)
+
+#creates a file called Patriots_tweets.csv with all the tweets and if the #file exists , it merges the data set with the existing data set and #remove the duplicate data in the new file . 
+#Scores the tweets based on no of positive and negative words . 
+
+#folder with positive dictionary
+
+
+positive <- scan('~/Desktop/positive-words.txt', what='character', comment.char=';') 
+#folder with negative dictionary
+
+negative <- scan('~/Desktop/negative-words.txt', what='character', comment.char=';') 
+positive.words <- c(positive)
+negative.words <- c(negative)
+Dataset <- Data
+Dataset$text <- as.factor(Dataset$text)
+
+evaluvate.Tweet <- function(tweets , positive.words, negative.words, .progress='none')
+{
+require(plyr)
+require(stringr)
+
+#For each element of a list, apply function then combine results into an array.
+
+Tweetscores <- laply ( tweets , function(tweet, positive.words, negative.words){
+
+#Data Processing steps in phase 2 
+tweet <- str_replace_all(tweet,"#[a-z,A-Z]*","")
+
+tweet <- str_replace_all(tweet,"@[a-z,A-Z]*","")   
+tweet = gsub("[^\x01-\x7F]", "", tweet) 
+tweet = gsub(" ?(f|ht)(tp)(s?)(://)(.*)[.|/](.*)", "", tweet)
+tweet = gsub('[[:punct:]]', "", tweet)
+tweet = gsub("\\n", "", tweet)
+tweet = tolower (tweet)
+tweet_list <- str_split(tweet, "\\s")
+View(tweet)
+words <- unlist(tweet_list)
+words <- rm_stopwords(words, tm::stopwords("english"))
+View(words)
+
+positive.matches <- match(words, positive.words)
+negative.matches <- match(words, negative.words)
+positive.matches <- !is.na(positive.matches)
+negative.matches <- !is.na(negative.matches)
+score <- sum(positive.matches) - sum(negative.matches)
+View(score)
+return(score)
+
+}, positive.words, negative.words, .progress=.progress)
+ Tweetscores.df <- data.frame(score= Tweetscores, text=tweets)
+ return(Tweetscores.df)
+
+}
+
+#Ends evaluvate.Tweet
+
+#calling the function to evaluvate the tweet 
+scores <- evaluvate.Tweet(Dataset$text, positive.words, negative.words, .progress='text')
+View(Scores)
+
+#saving evaluation results(score) into the file
+ write.csv(scores, file=paste(HashtagTerm, '_tweets.csv'), row.names=TRUE)  #total evaluation: positive / negative / neutral
+ 
+stat <- scores
+stat$created <- as.Date (Data$created)
+ 
+#Assigns Value as positive ,negative or neutral based on the score 
+stat <- mutate(stat, dt=ifelse(stat$score > 0, 'positive', ifelse(stat$score < 0, 'negative', 'neutral')))
+
+#grouping by date and score 
+ by.dt <- group_by(stat, dt, created)
+ 
+by.dt <- summarise(by.dt, number=n())
+# writing to the grouped data to csv file 
+ write.csv(by.dt, file=paste(HashtagTerm, '_grouped.csv'), row.names=TRUE)
+
+ggplot(by.dt, aes(created, number)) + geom_line(aes(group=dt, color=dt), size=2) +
+ geom_point(aes(group=dt, color=dt), size=4) +
+ theme(text = element_text(size=18), axis.text.x = element_text(angle=90, vjust=1)) +
+ #stat_summary(fun.y = 'sum', fun.ymin='sum', fun.ymax='sum', colour = 'yellow', size=2, geom = 'line') +
+ ggtitle(HashtagTerm)
+ggsave(file=paste(HashtagTerm, '_plot.jpeg'))
+
+}
+
+SearchInTwitter ("#GameOfThrones")
+
+```
+
+
+
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 ```
